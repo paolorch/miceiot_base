@@ -41,7 +41,18 @@ app.use(express.static('spa/static'));
 
 const PORT = 8080;
 
+
+
+
 app.post('/measurement', function (req, res) {
+
+    const device = db.public.many("SELECT * FROM devices")
+        .find(d => d.device_id === req.body.id);
+
+    if (!device || device.key !== req.body.key) {
+        return res.status(401).send("Dispositivo no autorizado");
+    }
+
     const timestamp = new Date().toISOString();
 
     console.log("Medicion:", {
