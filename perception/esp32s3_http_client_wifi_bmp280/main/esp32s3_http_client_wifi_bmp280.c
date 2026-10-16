@@ -17,6 +17,12 @@
 
 #include "esp_adc/adc_oneshot.h"
 
+#include "esp_mac.h"
+
+#include "esp_heap_caps.h"
+
+#include "esp_timer.h"
+
 #include "wifi_secrets.h"
 
 // 1 = tres potenciometros ADC
@@ -24,7 +30,7 @@
 #define USE_POTENTIOMETERS 1
 
 
-#define POT_PRESSURE    ADC_CHANNEL_3  
+#define POT_PRESSURE    ADC_CHANNEL_3
 #define POT_TEMPERATURE ADC_CHANNEL_4
 #define POT_HUMIDITY    ADC_CHANNEL_5
 
@@ -87,9 +93,9 @@ static void pots_read(float *pressure, float *temperature, float *humidity)
     ESP_ERROR_CHECK(adc_oneshot_read(adc_handle, POT_HUMIDITY, &raw_h));
 
     // Conversiones simuladas, no mediciones ambientales reales
-    *pressure    = 95000.0f + (raw_p / 4095.0f) * 10000.0f;
-    *temperature = 15.0f + (raw_t / 4095.0f) * 25.0f;
-    *humidity    = 20.0f + (raw_h / 4095.0f) * 70.0f;
+*pressure    = 90000.0f + (raw_p / 4095.0f) * 20000.0f;
+*temperature = 10.0f + (raw_t / 4095.0f) * 35.0f;
+*humidity    = 10.0f + (raw_h / 4095.0f) * 90.0f;
 
     ESP_LOGI(TAG, "ADC GPIO4=%d, GPIO5=%d, GPIO6=%d",
              raw_p, raw_t, raw_h);
@@ -105,7 +111,7 @@ static void pots_read(float *pressure, float *temperature, float *humidity)
 /* -----------------------------------------------------------
  * WiFi
  * --------------------------------------------------------- */
-void bmp280_test(bmp280_t *dev) 
+void bmp280_test(bmp280_t *dev)
 {
     bmp280_params_t params;
     bmp280_init_default_params(&params);
@@ -298,14 +304,50 @@ static void http_get(void)
  * POST
  * --------------------------------------------------------- */
 
+static char *POST_DATA_TEMPLATE = "id="DEVICE_ID"&key=234567&t=%.2f&h=%.2f&p=%.2f&error=%d";
 
-static char *POST_DATA_TEMPLATE = "id="DEVICE_ID"&t=%0.2f&h=%0.2f";
+static void diagnostico(float p, float t, float h, int error, int http)
+{
+    uint8_t mac[6];
+    wifi_ap_record_t ap = {0};
+
+    esp_read_mac(mac, ESP_MAC_WIFI_STA);
+    esp_wifi_sta_get_ap_info(&ap);
+
+    printf("\n========== DIAGNOSTICO ESP32-S3 ==========\n");
+    printf("MAC:              %02X:%02X:%02X:%02X:%02X:%02X\n",
+           mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    printf("RAM libre:        %lu KB\n",
+           (unsigned long)(esp_get_free_heap_size() / 1024));
+    printf("WiFi RSSI:        %d dBm\n", ap.rssi);
+    printf("Tiempo activo:    %lld segundos\n",
+           (long long)(esp_timer_get_time() / 1000000));
+#if USE_POTENTIOMETERS
+    printf("Sensores:         3 canales ADC\n");
+#else
+    printf("Sensores:         BMP280/BME280 por I2C\n");
+#endif
+    printf("Presion:          %.2f Pa\n", p);
+    printf("Temperatura:      %.2f C\n", t);
+    printf("Humedad:          %.2f %%\n", h);
+    printf("Estado medicion:  %s\n",
+           error ? "FUERA DE RANGO" : "NORMAL");
+    printf("HTTP:             %d\n", http);
+    printf("==========================================\n\n");
+}
+
+
 
 static void http_post(float *pressure, float *temperature, float *humidity) {
 
-    char post_data[64];
+    char post_data[128];
 
-    sprintf(post_data,POST_DATA_TEMPLATE, *temperature, *humidity);
+    int error = (*temperature < 15 || *temperature > 40 ||
+                 *humidity < 20 || *humidity > 90 ||
+                 *pressure < 95000 || *pressure > 105000);
+
+    snprintf(post_data, sizeof(post_data), POST_DATA_TEMPLATE,
+             *temperature, *humidity, *pressure, error);
 
     ESP_LOGI(TAG, "POST %s", SERVER_URL);
     ESP_LOGI(TAG, "POST_DATA %s", post_data);
@@ -338,6 +380,11 @@ static void http_post(float *pressure, float *temperature, float *humidity) {
     esp_err_t err =
         esp_http_client_perform(client);
 
+    int http_status = (err == ESP_OK)
+        ? esp_http_client_get_status_code(client) : 0;
+
+    diagnostico(*pressure, *temperature, *humidity, error, http_status);
+
     if (err == ESP_OK) {
 
         ESP_LOGI(TAG,
@@ -365,16 +412,16 @@ void app_main(void)
     );
 
     #if USE_POTENTIOMETERS
-    	ESP_LOGI(TAG, "Modo ADC: tres potenciometros");
-    	pots_init();
+        ESP_LOGI(TAG, "Modo ADC: tres potenciometros");
+        pots_init();
     #else
-    	bmp280_t dev;
+        bmp280_t dev;
 
-    	ESP_ERROR_CHECK(i2cdev_init());
+        ESP_ERROR_CHECK(i2cdev_init());
 
-    	ESP_LOGI(TAG, "bmp280 init...");
-    	bmp280_test(&dev);
-    #endif    
+        ESP_LOGI(TAG, "bmp280 init...");
+        bmp280_test(&dev);
+    #endif
 
     wifi_init();
 
@@ -392,12 +439,12 @@ void app_main(void)
     vTaskDelay(pdMS_TO_TICKS(1000));
 
     float pressure, temperature, humidity;
-    while (1) { 
+    while (1) {
         #if USE_POTENTIOMETERS
-        	pots_read(&pressure, &temperature, &humidity);
-	#else
-        	bmp280_read(&dev, &pressure, &temperature, &humidity);
-	#endif
+                pots_read(&pressure, &temperature, &humidity);
+        #else
+                bmp280_read(&dev, &pressure, &temperature, &humidity);
+        #endif
        http_post(&pressure, &temperature, &humidity);
        vTaskDelay(pdMS_TO_TICKS(5000));
     }
