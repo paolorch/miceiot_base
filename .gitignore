@@ -5,3 +5,6 @@ sdkconfig
 node_modules
 build
 managed_components
+
+# Credenciales Wi-Fi privadas
+**/wifi_secrets.h

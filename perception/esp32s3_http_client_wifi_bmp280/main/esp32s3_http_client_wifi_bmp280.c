@@ -15,15 +15,26 @@
 
 #include "esp_http_client.h"
 
+#include "esp_adc/adc_oneshot.h"
+
+#include "wifi_secrets.h"
+
+// 1 = tres potenciometros ADC
+// 0 = sensor BMP280/BME280 original por I2C
+#define USE_POTENTIOMETERS 1
+
+
+#define POT_PRESSURE    ADC_CHANNEL_3  
+#define POT_TEMPERATURE ADC_CHANNEL_4
+#define POT_HUMIDITY    ADC_CHANNEL_5
+
+static adc_oneshot_unit_handle_t adc_handle;
+
 #ifndef APP_CPU_NUM
 #define APP_CPU_NUM PRO_CPU_NUM
 #endif
 
-
-#define WIFI_SSID       ""
-#define WIFI_PASSWORD   ""
-
-#define SERVER_URL      "http://192.168.1.101:8080/measurement"
+#define SERVER_URL      "http://192.168.68.54:8080/measurement"
 
 #define DEVICE_ID "01"
 
@@ -34,6 +45,62 @@
 
 static const char *TAG = "HTTP_TEST";
 static EventGroupHandle_t wifi_event_group;
+
+
+/* -----------------------------------------------------------
+ * SIMULACION TEMPORAL: 3 POTENCIOMETROS ADC
+ * --------------------------------------------------------- */
+
+#if USE_POTENTIOMETERS
+
+static void pots_init(void)
+{
+    adc_oneshot_unit_init_cfg_t unit_cfg = {
+        .unit_id = ADC_UNIT_1,
+    };
+
+    ESP_ERROR_CHECK(adc_oneshot_new_unit(&unit_cfg, &adc_handle));
+
+    adc_oneshot_chan_cfg_t chan_cfg = {
+        .atten = ADC_ATTEN_DB_12,
+        .bitwidth = ADC_BITWIDTH_DEFAULT,
+    };
+
+    ESP_ERROR_CHECK(adc_oneshot_config_channel(
+        adc_handle, POT_PRESSURE, &chan_cfg));
+
+    ESP_ERROR_CHECK(adc_oneshot_config_channel(
+        adc_handle, POT_TEMPERATURE, &chan_cfg));
+
+    ESP_ERROR_CHECK(adc_oneshot_config_channel(
+        adc_handle, POT_HUMIDITY, &chan_cfg));
+}
+
+static void pots_read(float *pressure, float *temperature, float *humidity)
+{
+    int raw_p = 0;
+    int raw_t = 0;
+    int raw_h = 0;
+
+    ESP_ERROR_CHECK(adc_oneshot_read(adc_handle, POT_PRESSURE, &raw_p));
+    ESP_ERROR_CHECK(adc_oneshot_read(adc_handle, POT_TEMPERATURE, &raw_t));
+    ESP_ERROR_CHECK(adc_oneshot_read(adc_handle, POT_HUMIDITY, &raw_h));
+
+    // Conversiones simuladas, no mediciones ambientales reales
+    *pressure    = 95000.0f + (raw_p / 4095.0f) * 10000.0f;
+    *temperature = 15.0f + (raw_t / 4095.0f) * 25.0f;
+    *humidity    = 20.0f + (raw_h / 4095.0f) * 70.0f;
+
+    ESP_LOGI(TAG, "ADC GPIO4=%d, GPIO5=%d, GPIO6=%d",
+             raw_p, raw_t, raw_h);
+
+    ESP_LOGI(TAG, "SIMULADO: P=%.2f Pa, T=%.2f C, H=%.2f%%",
+             *pressure, *temperature, *humidity);
+}
+
+#endif
+
+
 
 /* -----------------------------------------------------------
  * WiFi
@@ -297,12 +364,17 @@ void app_main(void)
         nvs_flash_init()
     );
 
-    bmp280_t dev;
+    #if USE_POTENTIOMETERS
+    	ESP_LOGI(TAG, "Modo ADC: tres potenciometros");
+    	pots_init();
+    #else
+    	bmp280_t dev;
 
-    ESP_ERROR_CHECK(i2cdev_init());
+    	ESP_ERROR_CHECK(i2cdev_init());
 
-    ESP_LOGI(TAG, "bmp280 init...");
-    bmp280_test(&dev);    
+    	ESP_LOGI(TAG, "bmp280 init...");
+    	bmp280_test(&dev);
+    #endif    
 
     wifi_init();
 
@@ -321,7 +393,11 @@ void app_main(void)
 
     float pressure, temperature, humidity;
     while (1) { 
-       bmp280_read(&dev, &pressure, &temperature, &humidity);
+        #if USE_POTENTIOMETERS
+        	pots_read(&pressure, &temperature, &humidity);
+	#else
+        	bmp280_read(&dev, &pressure, &temperature, &humidity);
+	#endif
        http_post(&pressure, &temperature, &humidity);
        vTaskDelay(pdMS_TO_TICKS(5000));
     }
